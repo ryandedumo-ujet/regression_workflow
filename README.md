@@ -42,7 +42,7 @@ Jira filter URL
 ## Setup
 
 ```bash
-# 1. Install dependencies
+# 1. Install dependencies (required after first clone, or after pulling changes)
 npm install
 
 # 2. Verify .env has the correct 1Password references (already configured for the team)
@@ -50,6 +50,8 @@ cat .env
 ```
 
 The `.env` is pre-configured with 1Password references for all credentials. No manual token handling required.
+
+> **Note:** `node_modules/` is not committed. Run `npm install` after every fresh clone or pull.
 
 ---
 
