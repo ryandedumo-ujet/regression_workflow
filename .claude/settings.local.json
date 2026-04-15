@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la /Users/paul/Documents/ujet/repo/regression_workflow/*.env*)",
+      "Bash(ls -la /Users/paul/Documents/ujet/repo/regression_workflow/.env*)",
+      "Bash(op run:*)",
+      "Bash(npm install:*)",
+      "Bash(op signin:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(node -e ':*)",
+      "Bash(python3:*)"
+    ]
+  }
+}
