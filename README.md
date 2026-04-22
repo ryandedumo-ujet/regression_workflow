@@ -6,6 +6,22 @@ Supports two modes: **PR mode** (single PR link) and **Filter mode** (batch from
 
 ---
 
+## Claude Code Command
+
+The fastest way to run this — no need to remember the `op run` syntax:
+
+```
+/run-regression https://ujetcs.atlassian.net/issues?filter=XXXXX
+```
+
+```
+/run-regression https://github.com/UJET/ujet-server/pull/XXXXX
+```
+
+This invokes `regression-agent.md` automatically and runs through all phases (script run → Phase 2 reasoning → enhanced HTML output). See `regression-agent.md` for the full phase breakdown.
+
+---
+
 ## How it works
 
 ```
@@ -22,11 +38,15 @@ Input: PR link or Jira filter URL
       ▼                                                                    ▼
   GitHub PR Analysis
       │
-      ├─► DiffRiskAnalyzer     — detects signature changes, removed methods,
-      │                          auth/DB/job/env risks from actual diff lines
+      ├─► DiffRiskAnalyzer       — detects signature changes, removed methods,
+      │                            auth/DB/job/env risks from actual diff lines
       │
-      └─► DiffSymbolExtractor  — finds modified/removed symbols,
-                                  searches repo for callers outside the PR
+      ├─► DiffSymbolExtractor    — finds modified/removed symbols,
+      │                            searches repo for callers outside the PR
+      │
+      └─► FILENAME_EXPANSION_MAP — force-injects scenario rules based on
+                                   filename patterns (e.g. cold_transfer_*.rb
+                                   → AGENT_JOIN, deflect*.rb → VA_DEFLECTION)
       │
       ▼
   BrowserStack Matching  ──►  loads test cases from "Regression Suite" project,
@@ -37,11 +57,21 @@ Input: PR link or Jira filter URL
                                scenario rules, generates phased test plan
       │
       ▼
-  Output (4 files)
+  Output → regression-analysis-output/raw/
       ├── pr-risk-mapping.csv
       ├── regression-risk-map.md
+      ├── regression-risk-map.html
       ├── recommended-test-scenarios.csv
       └── browserstack-regression-scenarios.csv
+```
+
+After the script run, the Claude agent performs a **Phase 2 reasoning pass** — validating scenarios, removing false positives, flagging skipped tickets with production impact, and producing:
+
+```
+  regression-analysis-output/
+      ├── regression-risk-map-enhanced.html   ← final deliverable
+      ├── regression-risk-map-enhanced.md     ← reasoning document
+      └── raw/                                ← raw script output (above)
 ```
 
 ---
@@ -112,74 +142,30 @@ The filter ID is extracted automatically from the URL. If no URL is passed, the 
 op run --env-file=.env -- npm start -- --risk-map-only
 ```
 
-Reads the last `pr-risk-mapping.csv` and regenerates the risk map + scenarios without re-hitting any APIs. Useful when you want to re-run the scenario generation after adding new rules.
+Reads the last `pr-risk-mapping.csv` from `raw/` and regenerates the risk map + scenarios without re-hitting any APIs. Useful when adding new rules.
 
 ---
 
 ## Output Files
 
-All files are written to `regression-analysis-output/`. After a run, review them in this order:
+All script-generated files are written to `regression-analysis-output/raw/`. The Phase 2 enhanced output sits one level up.
 
-### 1. `regression-risk-map.md` — Start here
+### Final output (review these)
 
-This is your main document. Open it and read top to bottom:
+| File | Description |
+|------|-------------|
+| `regression-risk-map-enhanced.html` | Interactive report — tabs for Final Test Plan, Ticket Analysis, Skipped Tickets, Removed False Positives, Systemic Issues |
+| `regression-risk-map-enhanced.md` | Phase 2 reasoning document — per-ticket verdicts, false positive explanations, manual check notes |
 
-- **Executive Summary** — a table showing how many tickets landed in each risk bucket (Critical / High / Medium / Low). If everything is green, a light regression pass may be enough. If there are reds, keep reading.
-- **Per-Ticket Risk Breakdown** — for each ticket/PR:
-  - What files changed and the line counts
-  - **Direct Risks** — what the diff analysis found (signature changes, removed error handling, DB migrations, etc.)
-  - **Indirect Risks** — files *outside* the PR that call modified/removed symbols. These are the silent breakage risks that won't show up in a basic code review.
-  - **Risk Categories Triggered** — which domain-specific scenario rules matched (e.g. "Hold Music & Hold/Unhold Behavior", "Virtual Agent & AI Escalation Flows")
-  - **Recommended Test Scenarios** — specific scenarios with priority and category
-  - **Existing BrowserStack Test Cases** — which of your current tests already cover the risk. If this says "No matches found," that's a gap.
-  - **Uncovered Risks** — risk signals that didn't match any scenario rule. These need manual review.
-- **Consolidated Test Scenario List** — all scenarios deduplicated across tickets, sorted by priority, with source ticket references
-- **Execution Priority Guide** — your testing phases:
-  - **Phase 1: Smoke** (Critical only) — run first to catch show-stoppers
-  - **Phase 2: Core Regression** (High) — run after smoke passes
-  - **Phase 3: Extended Coverage** (Medium/Low) — run if time permits
+### Raw script output (`raw/`)
 
-### 2. `pr-risk-mapping.csv` — Raw data
-
-Open in a spreadsheet. Sort by **Risk Score** descending. Focus on anything 50+.
-
-| Column | Description |
-|--------|-------------|
-| Jira Ticket | CALL-XXXX key (or PR-XXXX if no Jira ticket found) |
-| Status | Current Jira status or PR state |
-| PR Link | GitHub PR URL |
-| Risk Score | 0–100 composite score |
-| Regression Area/Concern | Free-text field from Jira (`customfield_11041`) |
-| Changed Files (Diffs) | Files modified with line counts |
-| Direct Diff Risks | Risks found in the diff (signature changes, removed methods, etc.) |
-| Indirect Risks | Files outside the PR that call modified symbols, with line references |
-| Modified/Removed Symbols | Exact function/method names that changed |
-| Affected Components | Area categories (Authentication, Background_Jobs, etc.) |
-| Matched BrowserStack Test Cases | Top-matched test case titles |
-| BS Test Case URLs | Direct links to those test cases |
-
-### 3. `recommended-test-scenarios.csv` — Test tracker
-
-A flat list of every recommended scenario. Use as a checklist — import into a spreadsheet and mark pass/fail as you execute. Filter by **Priority** column to focus on Critical first.
-
-| Column | Description |
-|--------|-------------|
-| Source Ticket | Which ticket triggered this scenario |
-| Risk Score | The ticket's risk score |
-| Rule ID | Which scenario rule matched (e.g. `HOLD_MUSIC`, `VA_AI`) |
-| Priority | Critical / High / Medium / Low |
-| Category | Scenario category (Call State, Transfer, Recording, etc.) |
-| Scenario Title | What to test |
-| Steps | Step-by-step execution |
-| Verification | What to verify after execution |
-
-### 4. `browserstack-regression-scenarios.csv` — Upload to BrowserStack
-
-This CSV is formatted for direct import into BrowserStack Test Management. It uses the multi-row format matching your existing Regression Suite test cases (metadata on the first row, continuation rows for additional steps).
-
-To upload: BrowserStack > Project > Target folder > Import test cases > Select this CSV.
-
-The target folder ID is pre-set to `33917692`. After uploading, the generated scenarios become real BrowserStack test cases you can assign and execute.
+| File | Description |
+|------|-------------|
+| `regression-risk-map.md` | Full risk map with per-ticket breakdown, scenarios, BrowserStack matches |
+| `regression-risk-map.html` | Auto-generated interactive version of the risk map |
+| `pr-risk-mapping.csv` | Raw data — one row per ticket, risk score, diff risks, indirect callers |
+| `recommended-test-scenarios.csv` | Flat checklist of all scenarios — import to spreadsheet, mark pass/fail |
+| `browserstack-regression-scenarios.csv` | Formatted for direct import into BrowserStack Test Management |
 
 ---
 
@@ -198,15 +184,16 @@ The score is computed from: severity-weighted direct risks (HIGH: 15, MEDIUM: 8,
 
 ## Scenario Rules
 
-The risk map generator uses 11 domain-specific rule sets to map risk signals to test scenarios:
+The risk map generator uses 13 domain-specific rule sets to map risk signals to test scenarios:
 
 | Rule ID | Name | Triggers on |
 |---------|------|-------------|
 | `CALL_STATE` | Call State Machine & Progress Events | progress, state_machine, call_status, transition |
-| `AGENT_JOIN` | Agent Joining & Conference Logic | join, conference, participant, add_agent |
+| `AGENT_JOIN` | Agent Joining & Conference Logic | join, conference, participant, add_agent, cold_transfer |
 | `HOLD_MUSIC` | Hold Music & Hold/Unhold Behavior | hold, unhold, moh, pause, resume |
 | `RECORDING` | Call Recording & Post-Processing | recording, post_process, segment, dual_channel |
 | `VA_AI` | Virtual Agent & AI Escalation Flows | virtual_agent, escalat, progress_service, ccai |
+| `VA_DEFLECTION` | Virtual Agent OC/After-Hours Deflection | deflect, after_hours, overcap, overcapacity |
 | `METHOD_CHANGE` | Method Signature & API Contract Changes | signature changed, was removed, callers break |
 | `ERROR_HANDLING` | Error Handling & Exception Flow | error handling removed, exception propagat |
 | `BACKGROUND_JOBS` | Background Workers & Async Processing | worker, sidekiq, job, perform |
@@ -215,9 +202,20 @@ The risk map generator uses 11 domain-specific rule sets to map risk signals to 
 | `CRM` | CRM Integration & Metadata | crm, zendesk, salesforce, kustomer |
 | `API_ROUTES` | API Endpoint & Route Changes | route changed, endpoint, API contract |
 
-Rules match against changed symbols, risk descriptions, file paths, affected areas, and the Jira Regression Area/Concern field. When a rule matches, all of its scenarios are included in the output.
+### Filename Expansion
 
-To add a new rule: find the `RISK_SCENARIO_RULES` array in `jira-pr-regression-analyzer.js` and add a new entry following the existing pattern.
+In addition to signal matching, the analyzer force-injects rules based on filename patterns in the PR diff — bypassing the normal signal threshold:
+
+| Filename pattern | Rule injected |
+|-----------------|---------------|
+| `cold_transfer*.rb` | `AGENT_JOIN` |
+| `transfer_service/handler/manager` | `AGENT_JOIN` |
+| `deflect*.rb` | `VA_DEFLECTION` |
+| `after_hours*.rb` | `VA_DEFLECTION` (after-hours hint) |
+| `overcap*.rb` | `VA_DEFLECTION` (overcapacity hint) |
+| `save_recording/recording_worker` | `RECORDING` |
+
+To add a new rule: find `RISK_SCENARIO_RULES` in `jira-pr-regression-analyzer.js`. To add a filename trigger: find `FILENAME_EXPANSION_MAP`.
 
 ---
 
@@ -232,20 +230,26 @@ All tunable values are at the top of `jira-pr-regression-analyzer.js` in `CONFIG
 | `browserstack.folderId` | `30446438` | Source folder for test case matching |
 | `browserstack.targetFolderId` | `33917692` | Target folder ID for generated BrowserStack CSV |
 | `browserstack.fetchLimit` | `2000` | Max test cases loaded into memory |
+| `outputDir` | `./regression-analysis-output/raw` | Where script output files are written |
 
 ---
 
 ## Repo structure
 
 ```
-├── jira-pr-regression-analyzer.js   # Main script (analysis + risk map + scenarios)
+├── jira-pr-regression-analyzer.js        # Main script (analysis + risk map + HTML)
+├── regression-agent.md                   # Claude skill — phases for /run-regression
 ├── package.json
-├── .env                             # 1Password-backed credentials (not committed)
+├── .env                                  # 1Password-backed credentials (not committed)
 ├── .gitignore
 ├── README.md
-└── regression-analysis-output/      # Generated after first run
-    ├── pr-risk-mapping.csv
-    ├── regression-risk-map.md
-    ├── recommended-test-scenarios.csv
-    └── browserstack-regression-scenarios.csv
+└── regression-analysis-output/
+    ├── regression-risk-map-enhanced.html  # Final interactive report
+    ├── regression-risk-map-enhanced.md   # Phase 2 reasoning document
+    └── raw/                              # Raw script output (generated on each run)
+        ├── pr-risk-mapping.csv
+        ├── regression-risk-map.md
+        ├── regression-risk-map.html
+        ├── recommended-test-scenarios.csv
+        └── browserstack-regression-scenarios.csv
 ```
